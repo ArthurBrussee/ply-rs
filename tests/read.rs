@@ -4,11 +4,13 @@ use ply_rs::*;
 type Ply = ply::Ply<ply::DefaultElement>;
 
 fn read_file(path: &str) -> Ply {
-    let mut f = std::fs::File::open(path).unwrap();
-    let p = parser::Parser::new();
-    let ply = p.read_ply(&mut f);
-    assert!(ply.is_ok(), "failed: {}", ply.err().unwrap());
-    ply.unwrap()
+    async_std::task::block_on(async {
+        let mut f = async_std::fs::File::open(path).await.unwrap();
+        let p = parser::Parser::new();
+        let ply = p.read_ply(&mut f).await;
+        assert!(ply.is_ok(), "failed: {}", ply.err().unwrap());
+        ply.unwrap()
+    })
 }
 
 #[test]
@@ -137,72 +139,76 @@ mod struct_test_1 {
     /// Demonstrates simplest use case for reading from a file.
     #[test]
     fn read_into_struct() {
-        // set up a reader, in this a file.
-        let path = "example_plys/greg_turk_example1_ok_ascii.ply";
+        async_std::task::block_on(async {
+            // set up a reader, in this a file.
+            let path = "example_plys/greg_turk_example1_ok_ascii.ply";
 
-        let f = std::fs::File::open(path).unwrap();
-        // The header of a ply file consists of ascii lines, BufRead provides useful methods for that.
-        let mut f = std::io::BufReader::new(f);
+            let f = async_std::fs::File::open(path).await.unwrap();
+            // The header of a ply file consists of ascii lines, BufRead provides useful methods for that.
+            let mut f = async_std::io::BufReader::new(f);
 
-        // Create a parser for each struct. Parsers are cheap objects.
-        let vertex_parser = Parser::<Vertex>::new();
-        let face_parser = Parser::<Face>::new();
+            // Create a parser for each struct. Parsers are cheap objects.
+            let vertex_parser = Parser::<Vertex>::new();
+            let face_parser = Parser::<Face>::new();
 
-        // lets first consume the header
-        // We also could use `face_parser`, The configuration is a parser's only state.
-        // The reading position only depends on `f`.
-        let header = vertex_parser.read_header(&mut f).unwrap();
+            // lets first consume the header
+            // We also could use `face_parser`, The configuration is a parser's only state.
+            // The reading position only depends on `f`.
+            let header = vertex_parser.read_header(&mut f).await.unwrap();
 
-        // Depending on the header, read the data into our structs..
-        let mut vertex_list = Vec::new();
-        let mut face_list = Vec::new();
-        for element in &header.elements {
-            // we could also just parse them in sequence, but the file format might change
-            match element.name.as_ref() {
-                "vertex" => {
-                    vertex_list = vertex_parser
-                        .read_payload_for_element(&mut f, element, &header)
-                        .unwrap();
+            // Depending on the header, read the data into our structs..
+            let mut vertex_list = Vec::new();
+            let mut face_list = Vec::new();
+            for element in &header.elements {
+                // we could also just parse them in sequence, but the file format might change
+                match element.name.as_ref() {
+                    "vertex" => {
+                        vertex_list = vertex_parser
+                            .read_payload_for_element(&mut f, element, &header)
+                            .await
+                            .unwrap();
+                    }
+                    "face" => {
+                        face_list = face_parser
+                            .read_payload_for_element(&mut f, element, &header)
+                            .await
+                            .unwrap();
+                    }
+                    _ => panic!("Enexpeced element!"),
                 }
-                "face" => {
-                    face_list = face_parser
-                        .read_payload_for_element(&mut f, element, &header)
-                        .unwrap();
-                }
-                _ => panic!("Enexpeced element!"),
             }
-        }
 
-        println!("header: {:#?}", header);
-        println!("vertex list: {:#?}", vertex_list);
-        println!("face list: {:#?}", face_list);
+            println!("header: {:#?}", header);
+            println!("vertex list: {:#?}", vertex_list);
+            println!("face list: {:#?}", face_list);
 
-        let ply = read_file(path);
+            let ply = read_file(path);
 
-        for (i, vert) in vertex_list.iter().enumerate() {
-            let x = match ply.payload["vertex"][i]["x"] {
-                ply::Property::Float(v) => v,
-                _ => panic!("Unexpected property."),
-            };
-            assert_eq!(vert.x, x);
-            let y = match ply.payload["vertex"][i]["y"] {
-                ply::Property::Float(v) => v,
-                _ => panic!("Unexpected property."),
-            };
-            assert_eq!(vert.y, y);
-            let z = match ply.payload["vertex"][i]["z"] {
-                ply::Property::Float(v) => v,
-                _ => panic!("Unexpected property."),
-            };
-            assert_eq!(vert.z, z);
-        }
+            for (i, vert) in vertex_list.iter().enumerate() {
+                let x = match ply.payload["vertex"][i]["x"] {
+                    ply::Property::Float(v) => v,
+                    _ => panic!("Unexpected property."),
+                };
+                assert_eq!(vert.x, x);
+                let y = match ply.payload["vertex"][i]["y"] {
+                    ply::Property::Float(v) => v,
+                    _ => panic!("Unexpected property."),
+                };
+                assert_eq!(vert.y, y);
+                let z = match ply.payload["vertex"][i]["z"] {
+                    ply::Property::Float(v) => v,
+                    _ => panic!("Unexpected property."),
+                };
+                assert_eq!(vert.z, z);
+            }
 
-        for (i, face) in face_list.iter().enumerate() {
-            let v = match ply.payload["face"][i]["vertex_index"] {
-                ply::Property::ListInt(ref v) => v,
-                _ => panic!("Unexpected property."),
-            };
-            assert_eq!(face.vertex_index, *v);
-        }
+            for (i, face) in face_list.iter().enumerate() {
+                let v = match ply.payload["face"][i]["vertex_index"] {
+                    ply::Property::ListInt(ref v) => v,
+                    _ => panic!("Unexpected property."),
+                };
+                assert_eq!(face.vertex_index, *v);
+            }
+        });
     }
 }

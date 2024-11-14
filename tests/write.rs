@@ -1,15 +1,17 @@
 extern crate ply_rs;
+use async_std::io::{BufReader, Read};
 use ply_rs::ply::*;
 use ply_rs::*;
-use std::io::{BufReader, Read};
 
 type Ply = ply::Ply<ply::DefaultElement>;
 
-fn read_buff<T: Read>(mut buf: &mut T) -> Ply {
-    let p = parser::Parser::new();
-    let ply = p.read_ply(&mut buf);
-    assert!(ply.is_ok(), "failed: {}", ply.err().unwrap());
-    ply.unwrap()
+fn read_buff<T: Read + Unpin>(mut buf: &mut T) -> Ply {
+    async_std::task::block_on(async {
+        let p = parser::Parser::new();
+        let ply = p.read_ply(&mut buf).await;
+        assert!(ply.is_ok(), "failed: {}", ply.err().unwrap());
+        ply.unwrap()
+    })
 }
 
 fn write_buff(ply: &Ply) -> Vec<u8> {

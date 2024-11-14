@@ -20,6 +20,7 @@ travis-ci = { repository = "Fluci/ply-rs", branch = "master" }
 linked-hash-map = "^0.5.6"
 byteorder = "1.5"
 peg = "^0.8"
+async-std = "1.13.0"
 
 [[example]]
 name = "read_ply"
