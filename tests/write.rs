@@ -1,17 +1,15 @@
 extern crate ply_rs;
-use async_std::io::{BufReader, Read};
 use ply_rs::ply::*;
 use ply_rs::*;
+use tokio::io::{AsyncRead, BufReader};
 
 type Ply = ply::Ply<ply::DefaultElement>;
 
-fn read_buff<T: Read + Unpin>(mut buf: &mut T) -> Ply {
-    async_std::task::block_on(async {
-        let p = parser::Parser::new();
-        let ply = p.read_ply(&mut buf).await;
-        assert!(ply.is_ok(), "failed: {}", ply.err().unwrap());
-        ply.unwrap()
-    })
+async fn read_buff<T: AsyncRead + Unpin>(mut buf: &mut T) -> Ply {
+    let p = parser::Parser::new();
+    let ply = p.read_ply(&mut buf).await;
+    assert!(ply.is_ok(), "failed: {}", ply.err().unwrap());
+    ply.unwrap()
 }
 
 fn write_buff(ply: &Ply) -> Vec<u8> {
@@ -21,13 +19,13 @@ fn write_buff(ply: &Ply) -> Vec<u8> {
     buf
 }
 
-fn read_write_ply(ply: &Ply) -> Ply {
+async fn read_write_ply(ply: &Ply) -> Ply {
     println!("writing ply:\n{:?}", ply);
     let ve: Vec<u8> = write_buff(ply);
     let txt = String::from_utf8(ve.clone()).unwrap();
     println!("written ply:\n{}", txt);
     let mut buff = BufReader::new(&(*ve));
-    let new_ply = read_buff(&mut buff);
+    let new_ply = read_buff(&mut buff).await;
     println!("read ply:\n{:?}", new_ply);
     assert_eq!(ply.header, new_ply.header);
     assert_eq!(ply.payload, new_ply.payload);
@@ -107,27 +105,27 @@ fn create_list_elements() -> Ply {
     ply
 }
 
-#[test]
-fn write_header_min() {
+#[tokio::test]
+async fn write_header_min() {
     let ply = create_min();
-    let new_ply = read_write_ply(&ply);
+    let new_ply = read_write_ply(&ply).await;
     assert_eq!(ply, new_ply);
 }
-#[test]
-fn write_basic_header() {
+#[tokio::test]
+async fn write_basic_header() {
     let ply = create_basic_header();
-    let new_ply = read_write_ply(&ply);
+    let new_ply = read_write_ply(&ply).await;
     assert_eq!(ply, new_ply);
 }
-#[test]
-fn write_single_elements() {
+#[tokio::test]
+async fn write_single_elements() {
     let ply = create_single_elements();
-    let new_ply = read_write_ply(&ply);
+    let new_ply = read_write_ply(&ply).await;
     assert_eq!(ply, new_ply);
 }
-#[test]
-fn write_list_elements() {
+#[tokio::test]
+async fn write_list_elements() {
     let ply = create_list_elements();
-    let new_ply = read_write_ply(&ply);
+    let new_ply = read_write_ply(&ply).await;
     assert_eq!(ply, new_ply);
 }

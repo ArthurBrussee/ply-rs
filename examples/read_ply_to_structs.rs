@@ -52,48 +52,47 @@ impl ply::PropertyAccess for Face {
 }
 
 /// Demonstrates simplest use case for reading from a file.
-fn main() {
-    async_std::task::block_on(async {
-        // set up a reader, in this a file.
-        let path = "example_plys/greg_turk_example1_ok_ascii.ply";
-        let f = async_std::fs::File::open(path).await.unwrap();
-        // The header of a ply file consists of ascii lines, BufRead provides useful methods for that.
-        let mut f = async_std::io::BufReader::new(f);
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    // set up a reader, in this a file.
+    let path = "example_plys/greg_turk_example1_ok_ascii.ply";
+    let f = tokio::fs::File::open(path).await.unwrap();
+    // The header of a ply file consists of ascii lines, BufRead provides useful methods for that.
+    let mut f = tokio::io::BufReader::new(f);
 
-        // Create a parser for each struct. Parsers are cheap objects.
-        let vertex_parser = parser::Parser::<Vertex>::new();
-        let face_parser = parser::Parser::<Face>::new();
+    // Create a parser for each struct. Parsers are cheap objects.
+    let vertex_parser = parser::Parser::<Vertex>::new();
+    let face_parser = parser::Parser::<Face>::new();
 
-        // lets first consume the header
-        // We also could use `face_parser`, The configuration is a parser's only state.
-        // The reading position only depends on `f`.
-        let header = vertex_parser.read_header(&mut f).await.unwrap();
+    // lets first consume the header
+    // We also could use `face_parser`, The configuration is a parser's only state.
+    // The reading position only depends on `f`.
+    let header = vertex_parser.read_header(&mut f).await.unwrap();
 
-        // Depending on the header, read the data into our structs..
-        let mut vertex_list = Vec::new();
-        let mut face_list = Vec::new();
-        for element in &header.elements {
-            // we could also just parse them in sequence, but the file format might change
-            match element.name.as_ref() {
-                "vertex" => {
-                    vertex_list = vertex_parser
-                        .read_payload_for_element(&mut f, element, &header)
-                        .await
-                        .unwrap()
-                }
-                "face" => {
-                    face_list = face_parser
-                        .read_payload_for_element(&mut f, element, &header)
-                        .await
-                        .unwrap()
-                }
-                _ => panic!("Enexpeced element!"),
+    // Depending on the header, read the data into our structs..
+    let mut vertex_list = Vec::new();
+    let mut face_list = Vec::new();
+    for element in &header.elements {
+        // we could also just parse them in sequence, but the file format might change
+        match element.name.as_ref() {
+            "vertex" => {
+                vertex_list = vertex_parser
+                    .read_payload_for_element(&mut f, element, &header)
+                    .await
+                    .unwrap()
             }
+            "face" => {
+                face_list = face_parser
+                    .read_payload_for_element(&mut f, element, &header)
+                    .await
+                    .unwrap()
+            }
+            _ => panic!("Enexpeced element!"),
         }
+    }
 
-        // proof that data has been read
-        println!("header: {:#?}", header);
-        println!("vertex list: {:#?}", vertex_list);
-        println!("face list: {:#?}", face_list);
-    });
+    // proof that data has been read
+    println!("header: {:#?}", header);
+    println!("vertex list: {:#?}", vertex_list);
+    println!("face list: {:#?}", face_list);
 }

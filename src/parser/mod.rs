@@ -1,28 +1,31 @@
 //! Reads ascii or binary data into a `Ply`.
 
-use async_std::io::{BufRead, BufReader, ErrorKind, Read, Result};
-use byteorder::ReadBytesExt;
+use byteorder::ByteOrder;
 use std::fmt::Debug;
+use std::io::ErrorKind;
 use std::result;
+use tokio::io;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncRead;
+use tokio::io::BufReader;
+use tokio::io::Result;
 
-use async_std::io::BufReadExt;
 mod ply_grammar;
 
 use self::ply_grammar::grammar;
 use self::ply_grammar::Line;
 use crate::util::LocationTracker;
-use async_std::io::ReadExt;
 
-use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use peg;
+use tokio_byteorder::{AsyncReadBytesExt, BigEndian, LittleEndian};
 
 fn parse_ascii_rethrow<T, E: Debug>(
     location: &LocationTracker,
     line_str: &str,
     e: E,
     message: &str,
-) -> Result<T> {
-    Err(async_std::io::Error::new(
+) -> tokio::io::Result<T> {
+    Err(io::Error::new(
         ErrorKind::InvalidInput,
         format!(
             "Line {}: {}\n\tString: '{}'\n\tError: {:?}",
@@ -31,7 +34,7 @@ fn parse_ascii_rethrow<T, E: Debug>(
     ))
 }
 fn parse_ascii_error<T>(location: &LocationTracker, line_str: &str, message: &str) -> Result<T> {
-    Err(async_std::io::Error::new(
+    Err(io::Error::new(
         ErrorKind::InvalidInput,
         format!(
             "Line {}: {}\n\tString: '{}'",
@@ -109,66 +112,6 @@ pub struct Parser<E: PropertyAccess> {
     phantom: PhantomData<E>,
 }
 
-trait AsyncByteOrder {
-    async fn async_read_u8(&mut self) -> std::io::Result<u8>;
-    async fn async_read_i8(&mut self) -> std::io::Result<i8>;
-    async fn async_read_i16<T: ByteOrder>(&mut self) -> std::io::Result<i16>;
-    async fn async_read_i32<T: ByteOrder>(&mut self) -> std::io::Result<i32>;
-    async fn async_read_u16<T: ByteOrder>(&mut self) -> std::io::Result<u16>;
-    async fn async_read_u32<T: ByteOrder>(&mut self) -> std::io::Result<u32>;
-    async fn async_read_f32<T: ByteOrder>(&mut self) -> std::io::Result<f32>;
-    async fn async_read_f64<T: ByteOrder>(&mut self) -> std::io::Result<f64>;
-}
-impl<T: Read + Unpin> AsyncByteOrder for T {
-    async fn async_read_i8(&mut self) -> std::io::Result<i8> {
-        let mut bytes = vec![0; 1];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_i8()
-    }
-
-    async fn async_read_u8(&mut self) -> std::io::Result<u8> {
-        let mut bytes = vec![0; 1];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_u8()
-    }
-
-    async fn async_read_i16<B: ByteOrder>(&mut self) -> std::io::Result<i16> {
-        let mut bytes = vec![0; 2];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_i16::<B>()
-    }
-
-    async fn async_read_i32<B: ByteOrder>(&mut self) -> std::io::Result<i32> {
-        let mut bytes = vec![0; 4];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_i32::<B>()
-    }
-
-    async fn async_read_u16<B: ByteOrder>(&mut self) -> std::io::Result<u16> {
-        let mut bytes = vec![0; 2];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_u16::<B>()
-    }
-
-    async fn async_read_u32<B: ByteOrder>(&mut self) -> std::io::Result<u32> {
-        let mut bytes = vec![0; 4];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_u32::<B>()
-    }
-
-    async fn async_read_f32<B: ByteOrder>(&mut self) -> std::io::Result<f32> {
-        let mut bytes = vec![0; 4];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_f32::<B>()
-    }
-
-    async fn async_read_f64<B: ByteOrder>(&mut self) -> std::io::Result<f64> {
-        let mut bytes = vec![0; 8];
-        self.read_exact(&mut bytes).await?;
-        bytes.as_slice().read_f64::<B>()
-    }
-}
-
 //use std::marker::PhantomData;
 //use std::io::{ Read, BufReader };
 use crate::ply::Ply;
@@ -188,7 +131,7 @@ impl<E: PropertyAccess> Parser<E> {
     ///
     /// A PLY file starts with "ply\n". `read_ply` reads until all elements have been read as
     /// defined in the header of the PLY file.
-    pub async fn read_ply<T: Read + Unpin>(&self, source: T) -> Result<Ply<E>> {
+    pub async fn read_ply<T: AsyncRead + Unpin>(&self, source: T) -> Result<Ply<E>> {
         let mut source = BufReader::new(source);
         let mut location = LocationTracker::new();
         let header = self.__read_header(&mut source, &mut location).await?;
@@ -223,14 +166,17 @@ impl<E: PropertyAccess> Parser<E> {
     ///
     /// A ply file starts with "ply\n". The header and the payload are separated by a line `end_header\n`.
     /// This method reads all headere elemnts up to `end_header`.
-    pub async fn read_header<T: BufRead + Unpin>(&self, reader: &mut T) -> Result<Header> {
+    pub async fn read_header<R: Unpin>(&self, reader: &mut BufReader<R>) -> Result<Header>
+    where
+        BufReader<R>: AsyncBufReadExt,
+    {
         let mut line = LocationTracker::new();
         self.__read_header(reader, &mut line).await
     }
     pub fn read_header_line(&self, line: &str) -> Result<Line> {
         match self.__read_header_line(line) {
             Ok(l) => Ok(l),
-            Err(e) => Err(async_std::io::Error::new(
+            Err(e) => Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("Couldn't parse line.\n\tString: {}\n\tError: {:?}", line, e),
             )),
@@ -245,11 +191,14 @@ impl<E: PropertyAccess> Parser<E> {
         grammar::line(line_str)
     }
 
-    async fn __read_header<T: BufRead + Unpin>(
+    async fn __read_header<R: Unpin>(
         &self,
-        reader: &mut T,
+        reader: &mut BufReader<R>,
         location: &mut LocationTracker,
-    ) -> Result<Header> {
+    ) -> Result<Header>
+    where
+        BufReader<R>: AsyncBufReadExt,
+    {
         location.next_line();
         let mut line_str = String::new();
         reader.read_line(&mut line_str).await?;
@@ -267,10 +216,10 @@ impl<E: PropertyAccess> Parser<E> {
             }
         }
         match grammar::line(&line_str) {
-            Err(e) => return Err(async_std::io::Error::new(ErrorKind::InvalidInput, e)),
+            Err(e) => return Err(io::Error::new(ErrorKind::InvalidInput, e)),
             Ok(l @ Line::MagicNumber) => l,
             Ok(ob) => {
-                return Err(async_std::io::Error::new(
+                return Err(io::Error::new(
                     ErrorKind::InvalidInput,
                     format!(
                     "Invalid line encountered. Expected type: 'Line::MagicNumber', found: '{:?}'",
@@ -343,7 +292,7 @@ impl<E: PropertyAccess> Parser<E> {
             location.next_line();
         }
         if header_form_ver.is_none() {
-            return Err(async_std::io::Error::new(
+            return Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 "No format line found.",
             ));
@@ -364,11 +313,14 @@ impl<E: PropertyAccess> Parser<E> {
 // //////////////////////
 impl<E: PropertyAccess> Parser<E> {
     /// Reads payload. Encoding is chosen according to the encoding field in `header`.
-    pub async fn read_payload<T: BufRead + Unpin>(
+    pub async fn read_payload<R>(
         &self,
-        reader: &mut T,
+        reader: &mut BufReader<R>,
         header: &Header,
-    ) -> Result<Payload<E>> {
+    ) -> Result<Payload<E>>
+    where
+        R: AsyncBufReadExt + Unpin,
+    {
         let mut location = LocationTracker::new();
         self.__read_payload(reader, &mut location, header).await
     }
@@ -376,9 +328,9 @@ impl<E: PropertyAccess> Parser<E> {
     /// Reads entire list of elements from payload. Encoding is chosen according to `header`.
     ///
     /// Make sure to read the elements in the order as they are defined in the header.
-    pub async fn read_payload_for_element<T: BufRead + Unpin>(
+    pub async fn read_payload_for_element<R: AsyncRead + Unpin>(
         &self,
-        reader: &mut T,
+        reader: &mut BufReader<R>,
         element_def: &ElementDef,
         header: &Header,
     ) -> Result<Vec<E>> {
@@ -400,9 +352,9 @@ impl<E: PropertyAccess> Parser<E> {
     }
 
     /// internal dispatcher based on the encoding
-    async fn __read_payload<T: BufRead + Unpin>(
+    async fn __read_payload<R: AsyncRead + Unpin>(
         &self,
-        reader: &mut T,
+        reader: &mut BufReader<R>,
         location: &mut LocationTracker,
         header: &Header,
     ) -> Result<Payload<E>> {
@@ -449,9 +401,9 @@ use std::marker;
 
 /// # Ascii
 impl<E: PropertyAccess> Parser<E> {
-    async fn read_ascii_payload_for_element<T: BufRead + Unpin>(
+    async fn read_ascii_payload_for_element<R: AsyncRead + Unpin>(
         &self,
-        reader: &mut T,
+        reader: &mut BufReader<R>,
         location: &mut LocationTracker,
         element_def: &ElementDef,
     ) -> Result<Vec<E>> {
@@ -483,7 +435,7 @@ impl<E: PropertyAccess> Parser<E> {
         let elems = match grammar::data_line(line) {
             Ok(e) => e,
             Err(ref e) => {
-                return Err(async_std::io::Error::new(
+                return Err(io::Error::new(
                     ErrorKind::InvalidInput,
                     format!(
                         "Couldn't parse element line.\n\tString: '{}'\n\tError: {}",
@@ -509,7 +461,7 @@ impl<E: PropertyAccess> Parser<E> {
     ) -> Result<Property> {
         let s: &str = match elem_iter.next() {
             None => {
-                return Err(async_std::io::Error::new(
+                return Err(io::Error::new(
                     ErrorKind::InvalidInput,
                     format!(
                         "Expected element of type '{:?}', but found nothing.",
@@ -565,7 +517,7 @@ impl<E: PropertyAccess> Parser<E> {
         let v = s.parse();
         match v {
             Ok(r) => Ok(r),
-            Err(e) => Err(async_std::io::Error::new(
+            Err(e) => Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("Parse error.\n\tValue: '{}'\n\tError: {:?}, ", s, e),
             )),
@@ -584,7 +536,7 @@ impl<E: PropertyAccess> Parser<E> {
         for i in 0..count {
             let s: &str = match elem_iter.next() {
                 None => {
-                    return Err(async_std::io::Error::new(
+                    return Err(io::Error::new(
                         ErrorKind::InvalidInput,
                         format!("Couldn't find a list element at index {}.", i),
                     ))
@@ -603,7 +555,7 @@ impl<E: PropertyAccess> Parser<E> {
     /// Reads a single element as declared in èlement_def. Assumes big endian encoding.
     ///
     /// Make sure all elements are parsed in the order they are defined in the header.
-    pub async fn read_big_endian_element<T: Read + Unpin>(
+    pub async fn read_big_endian_element<T: AsyncRead + Unpin>(
         &self,
         reader: &mut T,
         element_def: &ElementDef,
@@ -616,7 +568,7 @@ impl<E: PropertyAccess> Parser<E> {
     /// Reads a single element as declared in èlement_def. Assumes big endian encoding.
     ///
     /// Make sure all elements are parsed in the order they are defined in the header.
-    pub async fn read_little_endian_element<T: Read + Unpin>(
+    pub async fn read_little_endian_element<T: AsyncRead + Unpin>(
         &self,
         reader: &mut T,
         element_def: &ElementDef,
@@ -627,7 +579,7 @@ impl<E: PropertyAccess> Parser<E> {
     }
 
     /// internal wrapper
-    async fn read_big_endian_payload_for_element<T: Read + Unpin>(
+    async fn read_big_endian_payload_for_element<T: AsyncRead + Unpin>(
         &self,
         reader: &mut T,
         location: &mut LocationTracker,
@@ -637,7 +589,7 @@ impl<E: PropertyAccess> Parser<E> {
             .await
     }
 
-    async fn read_little_endian_payload_for_element<T: Read + Unpin>(
+    async fn read_little_endian_payload_for_element<T: AsyncRead + Unpin>(
         &self,
         reader: &mut T,
         location: &mut LocationTracker,
@@ -647,7 +599,7 @@ impl<E: PropertyAccess> Parser<E> {
             .await
     }
 
-    async fn read_binary_payload_for_element<T: Read + Unpin, B: ByteOrder>(
+    async fn read_binary_payload_for_element<T: AsyncRead + Unpin, B: ByteOrder>(
         &self,
         reader: &mut T,
         location: &mut LocationTracker,
@@ -664,7 +616,7 @@ impl<E: PropertyAccess> Parser<E> {
         Ok(elems)
     }
 
-    async fn read_binary_element<T: Read + Unpin, B: ByteOrder>(
+    async fn read_binary_element<T: AsyncRead + Unpin, B: ByteOrder>(
         &self,
         reader: &mut T,
         element_def: &ElementDef,
@@ -679,36 +631,36 @@ impl<E: PropertyAccess> Parser<E> {
         Ok(raw_element)
     }
 
-    async fn read_binary_property<T: Read + Unpin, B: ByteOrder>(
+    async fn read_binary_property<T: AsyncRead + Unpin, B: ByteOrder>(
         &self,
         reader: &mut T,
         data_type: PropertyType,
     ) -> Result<Property> {
         let result = match data_type {
             PropertyType::Scalar(scalar_type) => match scalar_type {
-                ScalarType::Char => Property::Char(reader.async_read_i8().await?),
-                ScalarType::UChar => Property::UChar(reader.async_read_u8().await?),
-                ScalarType::Short => Property::Short(reader.async_read_i16::<B>().await?),
-                ScalarType::UShort => Property::UShort(reader.async_read_u16::<B>().await?),
-                ScalarType::Int => Property::Int(reader.async_read_i32::<B>().await?),
-                ScalarType::UInt => Property::UInt(reader.async_read_u32::<B>().await?),
-                ScalarType::Float => Property::Float(reader.async_read_f32::<B>().await?),
-                ScalarType::Double => Property::Double(reader.async_read_f64::<B>().await?),
+                ScalarType::Char => Property::Char(reader.read_i8().await?),
+                ScalarType::UChar => Property::UChar(reader.read_u8().await?),
+                ScalarType::Short => Property::Short(reader.read_i16::<B>().await?),
+                ScalarType::UShort => Property::UShort(reader.read_u16::<B>().await?),
+                ScalarType::Int => Property::Int(reader.read_i32::<B>().await?),
+                ScalarType::UInt => Property::UInt(reader.read_u32::<B>().await?),
+                ScalarType::Float => Property::Float(reader.read_f32::<B>().await?),
+                ScalarType::Double => Property::Double(reader.read_f64::<B>().await?),
             },
             PropertyType::List(ref index_type, ref property_type) => {
                 let count: usize =
                     match *index_type {
-                        ScalarType::Char => reader.async_read_i8().await? as usize,
-                        ScalarType::UChar => reader.async_read_u8().await? as usize,
-                        ScalarType::Short => reader.async_read_i16::<B>().await? as usize,
-                        ScalarType::UShort => reader.async_read_u16::<B>().await? as usize,
-                        ScalarType::Int => reader.async_read_i32::<B>().await? as usize,
-                        ScalarType::UInt => reader.async_read_u32::<B>().await? as usize,
-                        ScalarType::Float => return Err(async_std::io::Error::new(
+                        ScalarType::Char => reader.read_i8().await? as usize,
+                        ScalarType::UChar => reader.read_u8().await? as usize,
+                        ScalarType::Short => reader.read_i16::<B>().await? as usize,
+                        ScalarType::UShort => reader.read_u16::<B>().await? as usize,
+                        ScalarType::Int => reader.read_i32::<B>().await? as usize,
+                        ScalarType::UInt => reader.read_u32::<B>().await? as usize,
+                        ScalarType::Float => return Err(io::Error::new(
                             ErrorKind::InvalidInput,
                             "Index of list must be an integer type, float declared in ScalarType.",
                         )),
-                        ScalarType::Double => return Err(async_std::io::Error::new(
+                        ScalarType::Double => return Err(io::Error::new(
                             ErrorKind::InvalidInput,
                             "Index of list must be an integer type, double declared in ScalarType.",
                         )),
@@ -717,56 +669,56 @@ impl<E: PropertyAccess> Parser<E> {
                     ScalarType::Char => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_i8().await?);
+                            list.push(reader.read_i8().await?);
                         }
                         Property::ListChar(list)
                     }
                     ScalarType::UChar => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_u8().await?);
+                            list.push(reader.read_u8().await?);
                         }
                         Property::ListUChar(list)
                     }
                     ScalarType::Short => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_i16::<B>().await?);
+                            list.push(reader.read_i16::<B>().await?);
                         }
                         Property::ListShort(list)
                     }
                     ScalarType::UShort => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_u16::<B>().await?);
+                            list.push(reader.read_u16::<B>().await?);
                         }
                         Property::ListUShort(list)
                     }
                     ScalarType::Int => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_i32::<B>().await?);
+                            list.push(reader.read_i32::<B>().await?);
                         }
                         Property::ListInt(list)
                     }
                     ScalarType::UInt => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_u32::<B>().await?);
+                            list.push(reader.read_u32::<B>().await?);
                         }
                         Property::ListUInt(list)
                     }
                     ScalarType::Float => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_f32::<B>().await?);
+                            list.push(reader.read_f32::<B>().await?);
                         }
                         Property::ListFloat(list)
                     }
                     ScalarType::Double => {
                         let mut list = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list.push(reader.async_read_f64::<B>().await?);
+                            list.push(reader.read_f64::<B>().await?);
                         }
                         Property::ListDouble(list)
                     }
@@ -779,6 +731,8 @@ impl<E: PropertyAccess> Parser<E> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::BufReader;
+
     use super::grammar as g;
     use super::Line;
     use crate::parser::Parser;
@@ -803,15 +757,14 @@ mod tests {
             assert!(result.is_err());
         };
     }
-    #[test]
-    fn parser_header_ok() {
-        async_std::task::block_on(async {
-            let p = Parser::<DefaultElement>::new();
-            let txt = "ply\nformat ascii 1.0\nend_header\n";
-            let mut bytes = txt.as_bytes();
-            assert_ok!(p.read_header(&mut bytes).await);
+    #[tokio::test]
+    async fn parser_header_ok() {
+        let p = Parser::<DefaultElement>::new();
+        let txt = "ply\nformat ascii 1.0\nend_header\n";
+        let mut bytes = BufReader::new(txt.as_bytes());
+        assert_ok!(p.read_header(&mut bytes).await);
 
-            let txt = "ply\n\
+        let txt = "ply\n\
         format ascii 1.0\n\
         element vertex 8\n\
         property float x\n\
@@ -819,32 +772,28 @@ mod tests {
         element face 6\n\
         property list uchar int vertex_index\n\
         end_header\n";
-            let mut bytes = txt.as_bytes();
-            assert_ok!(p.read_header(&mut bytes).await);
-        });
+        let mut bytes = BufReader::new(txt.as_bytes());
+        assert_ok!(p.read_header(&mut bytes).await);
     }
-    #[test]
-    fn parser_demo_ok() {
-        async_std::task::block_on(async {
-            let txt = "ply\nformat ascii 1.0\nend_header\n";
-            let mut bytes = txt.as_bytes();
-            let p = Parser::<DefaultElement>::new();
-            assert_ok!(p.read_header(&mut bytes).await);
+    #[tokio::test]
+    async fn parser_demo_ok() {
+        let txt = "ply\nformat ascii 1.0\nend_header\n";
+        let mut bytes = BufReader::new(txt.as_bytes());
+        let p = Parser::<DefaultElement>::new();
+        assert_ok!(p.read_header(&mut bytes).await);
 
-            let txt = "ply\n\
+        let txt = "ply\n\
         format ascii 1.0\n\
         element vertex 1\n\
         property float x\n\
         end_header\n
         6.28318530718"; // no newline at end!
-            let mut bytes = txt.as_bytes();
-            assert_ok!(p.read_header(&mut bytes).await);
-        });
+        let mut bytes = BufReader::new(txt.as_bytes());
+        assert_ok!(p.read_header(&mut bytes).await);
     }
-    #[test]
-    fn parser_single_elements_ok() {
-        async_std::task::block_on(async {
-            let txt = "ply\r\n\
+    #[tokio::test]
+    async fn parser_single_elements_ok() {
+        let txt = "ply\r\n\
         format ascii 1.0\r\n\
         comment Hi, I'm your friendly comment.\r\n\
         obj_info And I'm your object information.\r\n\
@@ -854,10 +803,9 @@ mod tests {
         end_header\r\n\
         -7 5\r\n\
         2 4\r\n";
-            let mut bytes = txt.as_bytes();
-            let p = Parser::<DefaultElement>::new();
-            assert_ok!(p.read_ply(&mut bytes).await);
-        });
+        let mut bytes = txt.as_bytes();
+        let p = Parser::<DefaultElement>::new();
+        assert_ok!(p.read_ply(&mut bytes).await);
     }
     #[test]
     fn read_property_ok() {
